@@ -3,7 +3,7 @@ const _ = require('lodash');
 const kue = require('kue')
 const queue = kue.createQueue();
 
-const { Exchange, ExchangePair } = require('../server/models/index');
+const { Exchange, ExchangePair, Ticker } = require('../server/models/index');
 
 // ---
 const ENABLED_EXCHANGES = [
@@ -47,8 +47,8 @@ const retrieveExchangeMarkets = () => {
 
 // Retrieve enabled market tickers
 // Do this every second?
+// TODO: Simplify, too complex
 const retrieveTickers = async () => {
-
 
 
     // Get exchange from db
@@ -67,8 +67,10 @@ const retrieveTickers = async () => {
         if(exchange.exchangePairs) {
             exchange.exchangePairs.forEach((exchangePair) => {
                 const job = queue.create('fetchTicker', {
-                    exchange: exchangeId,
-                    pair: exchangePair.name
+                    exchangeId: exchange.id,
+                    exchangeName: exchangeId,
+                    pairId: exchangePair.id,
+                    pairName: exchangePair.name
                 }).ttl(1500).removeOnComplete(true).save(function (err) {
                     if (!err) console.log(job.id);
                 });
@@ -80,8 +82,9 @@ const retrieveTickers = async () => {
 
     });
 
+    
     queue.process('fetchTicker', 20, function (job, done) {
-        retrieveTicker(job.data.exchange, job.data.pair, done);
+        retrieveTicker(job.data.exchangeId, job.data.exchangeName, job.data.pairId, job.data.pairName, done);
     });
 
     // Gracefully shutdown
@@ -91,8 +94,21 @@ const retrieveTickers = async () => {
             process.exit(0);
         });
     });
-    
+};
 
+// We use the names to fetch from the exchanges
+// and the ids to store locally
+const retrieveTicker = async (exchangeId, exchangeName, pairId, pairName, done) => {
+    try {
+        const ticker = await exchanges[exchangeName].fetchTicker(pairName);
+        storeTicker(exchangeId, pairId, ticker);
+        done();
+    } catch (e) {
+        done(e);
+    }
+};
+
+// Example output:
     // { symbol: 'BTC/USDT',
     //     timestamp: 1516128253653,
     //     datetime: '2018-01-16T18:44:13.653Z',
@@ -126,20 +142,19 @@ const retrieveTickers = async () => {
     //         Created: '2015-12-11T06:31:40.633'
     //     }
     // }
-};
 
-const retrieveTicker = async (exchangeId, pair, done) => {
-    try {
-        const ticker = await exchanges[exchangeId].fetchTicker(pair);
-        storeTicker(ticker);
-        done();
-    } catch (e) {
-        done(e);
-    }
-};
-
-const storeTicker = async (data) => {
-
+const storeTicker = async (exchangeId, pairId, data) => {
+    const ticker = await Ticker.create({
+        datetime: data.datetime,
+        high: data.high,
+        low: data.low,
+        bid: data.bid,
+        ask: data.ask,
+        exchangeId: exchangeId,
+        exchangePairId: pairId,
+    });
+    
+    console.log(ticker.id);
 };
 
 // retrieveExchangeMarkets();

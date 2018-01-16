@@ -29,7 +29,7 @@ module.exports = {
           key: 'id',
           as: 'exchangeId',
         },
-      },
+      }
     }),
   down: (queryInterface /* , Sequelize */) => queryInterface.dropTable('ExchangePairs'),
 };
