@@ -31,15 +31,6 @@ module.exports = {
         allowNull: false,
         type: Sequelize.DATE
       },
-      exchangeId: {
-        type: Sequelize.INTEGER,
-        onDelete: 'CASCADE',
-        references: {
-          model: 'Exchanges',
-          key: 'id',
-          as: 'exchangeId',
-        },
-      },
       exchangePairId: {
         type: Sequelize.INTEGER,
         onDelete: 'CASCADE',

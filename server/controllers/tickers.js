@@ -9,7 +9,9 @@ module.exports = {
     //         .catch(error => res.status(400).send(error));
     // },
     list(req, res) {
-        return Ticker.findAll()
+        return Ticker.findAll({
+            include: [ExchangePair]
+        })
             .then(tickers => res.status(200).send(tickers))
             .catch(error => res.status(400).send(error));
     },

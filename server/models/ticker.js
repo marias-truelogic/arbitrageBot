@@ -19,13 +19,9 @@ module.exports = (sequelize, DataTypes) => {
   });
 
   Ticker.associate = (models) => {
-    Ticker.belongsTo(models.Exchange, {
-      foreignKey: 'exchangeId',
-      onDelete: 'CASCADE'
-    });
     Ticker.belongsTo(models.ExchangePair, {
       foreignKey: 'exchangePairId',
-      onDelete: 'CASCADE'
+      onDelete: 'CASCADE',
     });
   };
 

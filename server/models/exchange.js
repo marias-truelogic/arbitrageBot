@@ -13,10 +13,6 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'exchangeId',
       as: 'exchangePairs',
     });
-    Exchange.hasMany(models.Ticker, {
-      foreignKey: 'tickerId',
-      as: 'tickers',
-    });
   };
 
   return Exchange;
