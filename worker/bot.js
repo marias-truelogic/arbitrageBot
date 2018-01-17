@@ -1,13 +1,23 @@
+#!/usr/bin/env node
+
 const ccxt = require('ccxt');
 const _ = require('lodash');
-const kue = require('kue')
-const queue = kue.createQueue();
+const kue = require('kue');
 
+const program = require('commander');
+
+program
+    .version('0.0.1')
+    .option('-m, --only-retrieve-markers', 'Only retrieve Markets')
+    .option('-t, --only-retrieve-tickers', 'Only retrieve Tickers')
+    .parse(process.argv);
+
+const queue = kue.createQueue();
 const { Exchange, ExchangePair, Ticker } = require('../server/models/index');
 
 // ---
 const ENABLED_EXCHANGES = [
-    // 'bittrex',
+    'bittrex',
     'binance'
 ]
 
@@ -20,15 +30,16 @@ ENABLED_EXCHANGES.forEach(id => {
 // Retrieve exchange-market pairs
 // Do this every 24 hours or more?
 const retrieveExchangeMarkets = () => {
-    ENABLED_EXCHANGES.forEach(async (exchangeId) => {
-        const loadedMarkets = await exchanges[exchangeId].load_markets();
+
+    ENABLED_EXCHANGES.forEach(async (exchangeName) => {
+        const loadedMarkets = await exchanges[exchangeName].load_markets();
         
         Exchange.findOrCreate({
             where: {
-                name: exchangeId
+                name: exchangeName
             }
         }).then((exchangeResult) => {
-            const [exchangeInstance, wasCreated] = exchangeResult;
+            const [exchangeInstance, exchangeWasCreated] = exchangeResult;
             _.forOwn(loadedMarkets, (value, key) => {
                 ExchangePair.findOrCreate({
                     where: {
@@ -36,12 +47,11 @@ const retrieveExchangeMarkets = () => {
                         exchangeId: exchangeInstance.id
                     }
                 }).then((exchangePairResult) => {
-                    const [exchangePairInstance, wasCreated] = exchangePairResult;
-                    console.log('exchangePairInstance.id', exchangePairInstance.id);
+                    const [exchangePairInstance, exchangePairWasCreated] = exchangePairResult;
+                    console.log(`Created pair: ${exchangeName} - ${key}`);
                 });
             });
         });
-
     });
 };
 
@@ -55,9 +65,9 @@ const retrieveTickers = async () => {
     // Get all pairs
     // Iterate all pairs, create new job for each pair
     
-    ENABLED_EXCHANGES.forEach(async (exchangeId) => {
+    ENABLED_EXCHANGES.forEach(async (exchangeName) => {
         const exchange = await Exchange.findOne({
-            where: { name: exchangeId },
+            where: { name: exchangeName },
             include: [{
                 model: ExchangePair,
                 as: 'exchangePairs',
@@ -68,22 +78,20 @@ const retrieveTickers = async () => {
             exchange.exchangePairs.forEach((exchangePair) => {
                 const job = queue.create('fetchTicker', {
                     exchangeId: exchange.id,
-                    exchangeName: exchangeId,
+                    exchangeName: exchangeName,
                     pairId: exchangePair.id,
                     pairName: exchangePair.name
                 }).ttl(1500).removeOnComplete(true).save(function (err) {
-                    if (!err) console.log(job.id);
+                    if (!err) console.log(`New Job; ${job.id} for exchange: ${exchangeName}, pair: ${exchangePair.name}`);
                 });
             });
         }
-
-
-        // const ticker = await exchange.fetchTicker(pair);
 
     });
 
     
     queue.process('fetchTicker', 20, function (job, done) {
+        console.log(`Retrieving ticker for exchange: ${job.data.exchangeName}, pair: ${job.data.pairName}`);
         retrieveTicker(job.data.exchangeId, job.data.exchangeName, job.data.pairId, job.data.pairName, done);
     });
 
@@ -101,7 +109,7 @@ const retrieveTickers = async () => {
 const retrieveTicker = async (exchangeId, exchangeName, pairId, pairName, done) => {
     try {
         const ticker = await exchanges[exchangeName].fetchTicker(pairName);
-        storeTicker(exchangeId, pairId, ticker);
+        storeTicker(exchangeId, exchangeName, pairId, pairName, ticker);
         done();
     } catch (e) {
         done(e);
@@ -143,19 +151,25 @@ const retrieveTicker = async (exchangeId, exchangeName, pairId, pairName, done) 
     //     }
     // }
 
-const storeTicker = async (exchangeId, pairId, data) => {
+
+const storeTicker = async(exchangeId, exchangeName, pairId, pairName, data) => {
     const ticker = await Ticker.create({
         datetime: data.datetime,
         high: data.high,
         low: data.low,
         bid: data.bid,
         ask: data.ask,
-        exchangeId: exchangeId,
         exchangePairId: pairId,
     });
     
-    console.log(ticker.id);
+    console.log(`Created Ticker: ${exchangeName} - ${pairName}`);
 };
 
-// retrieveExchangeMarkets();
-retrieveTickers();
+if (program.onlyRetrieveMarkers) {
+    retrieveExchangeMarkets();
+} else if(program.onlyRetrieveTickers) {
+    retrieveTickers();
+} else {
+    retrieveExchangeMarkets();
+    retrieveTickers();
+}
