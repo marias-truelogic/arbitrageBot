@@ -3,7 +3,7 @@
 const ccxt = require('ccxt');
 const _ = require('lodash');
 const kue = require('kue');
-
+const colors = require('colors');
 const program = require('commander');
 
 program
@@ -14,6 +14,8 @@ program
 
 const queue = kue.createQueue();
 const { Exchange, ExchangePair, Ticker } = require('../server/models/index');
+
+// TODO: Error handling
 
 // ---
 const ENABLED_EXCHANGES = [
@@ -48,7 +50,7 @@ const retrieveExchangeMarkets = () => {
                     }
                 }).then((exchangePairResult) => {
                     const [exchangePairInstance, exchangePairWasCreated] = exchangePairResult;
-                    console.log(`Created pair: ${exchangeName} - ${key}`);
+                    console.log(`Created pair: ${exchangeName} - ${key}`.green);
                 });
             });
         });
@@ -82,16 +84,15 @@ const retrieveTickers = async () => {
                     pairId: exchangePair.id,
                     pairName: exchangePair.name
                 }).ttl(1500).removeOnComplete(true).save(function (err) {
-                    if (!err) console.log(`New Job; ${job.id} for exchange: ${exchangeName}, pair: ${exchangePair.name}`);
+                    if (!err) console.log(`New Job; ${job.id} for exchange: ${exchangeName}, pair: ${exchangePair.name}`.green);
                 });
             });
         }
 
     });
 
-    
     queue.process('fetchTicker', 20, function (job, done) {
-        console.log(`Retrieving ticker for exchange: ${job.data.exchangeName}, pair: ${job.data.pairName}`);
+        console.log(`Retrieving ticker for exchange: ${job.data.exchangeName}, pair: ${job.data.pairName}`.yellow);
         retrieveTicker(job.data.exchangeId, job.data.exchangeName, job.data.pairId, job.data.pairName, done);
     });
 
@@ -153,16 +154,20 @@ const retrieveTicker = async (exchangeId, exchangeName, pairId, pairName, done) 
 
 
 const storeTicker = async(exchangeId, exchangeName, pairId, pairName, data) => {
-    const ticker = await Ticker.create({
-        datetime: data.datetime,
-        high: data.high,
-        low: data.low,
-        bid: data.bid,
-        ask: data.ask,
-        exchangePairId: pairId,
-    });
-    
-    console.log(`Created Ticker: ${exchangeName} - ${pairName}`);
+    try {
+        const ticker = await Ticker.create({
+            datetime: data.datetime,
+            high: data.high,
+            low: data.low,
+            bid: data.bid,
+            ask: data.ask,
+            exchangePairId: pairId,
+        });
+        
+        console.log(`Created Ticker: ${exchangeName} - ${pairName}`.green);
+    } catch(e) {
+        console.log(colors.red(e.message));
+    }
 };
 
 if (program.onlyRetrieveMarkers) {
@@ -172,4 +177,9 @@ if (program.onlyRetrieveMarkers) {
 } else {
     retrieveExchangeMarkets();
     retrieveTickers();
+}
+
+module.exports = {
+    retrieveExchangeMarkets,
+    retrieveTickers
 }
