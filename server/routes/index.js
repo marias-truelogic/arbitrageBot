@@ -1,5 +1,6 @@
 const exchangesController = require('../controllers').exchanges;
 const tickersController = require('../controllers').tickers;
+const exchangePairsController = require('../controllers').exchangePairs;
 
 module.exports = (app) => {
     app.get('/api', (req, res) => res.status(200).send({
@@ -10,4 +11,6 @@ module.exports = (app) => {
     app.get('/api/exchanges', exchangesController.list);
 
     app.get('/api/tickers', tickersController.list);
+
+    app.get('/api/exchangePairs', exchangePairsController.list);
 };

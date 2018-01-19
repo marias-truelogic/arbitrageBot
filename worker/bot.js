@@ -28,6 +28,27 @@ const ENABLED_EXCHANGES = [
     'yobit' //Russia (TIMING OUT. FIX THIS)
 ];
 
+const ENABLED_PAIRS = [
+    'BTC/USD',
+    'BTC/USDT',
+    'BTC/LTC',
+    'BTC/BHC',
+    'ETH/BTC',
+    'ETH/USD',
+    'ETH/USDT',
+    'LTC/USD',
+    'LTC/USDT',
+    'LTC/BTC',
+    'LTC/ETH'
+];
+
+const PROXIES = [
+    '', // no proxy by default
+    'https://crossorigin.me/',
+    'https://cors-anywhere.herokuapp.com/',
+];
+const RETRIES = PROXIES.length;
+
 // Init enabled exchanges
 const exchanges = {};
 ENABLED_EXCHANGES.forEach(id => {
@@ -48,17 +69,19 @@ if (process.env.BINANCE_WITHDRAW_KEY && process.env.BINANCE_WITHDRAW_SECRET && e
 // Retrieve exchange-market pairs
 // Do this every 24 hours or more?
 const retrieveExchangeMarkets = () => {
-
     ENABLED_EXCHANGES.forEach(async (exchangeName) => {
         const loadedMarkets = await exchanges[exchangeName].load_markets();
-        
+        const filteredMarkets = _.pickBy(loadedMarkets, (value, key) => {
+            return !!_.find(ENABLED_PAIRS, pair => pair === key);
+        });
+
         Exchange.findOrCreate({
             where: {
                 name: exchangeName
             }
         }).then((exchangeResult) => {
             const [exchangeInstance, exchangeWasCreated] = exchangeResult;
-            _.forOwn(loadedMarkets, (value, key) => {
+            _.forOwn(filteredMarkets, (value, key) => {
                 ExchangePair.findOrCreate({
                     where: {
                         name: key,
@@ -99,7 +122,12 @@ const retrieveTickers = async () => {
         const job = queue.create('fetchMarketPairTicker', {
             exchangeData: value,
             pairName: key
-        }).removeOnComplete(true).save(function (err) {
+        }).removeOnComplete(true)
+        .ttl(1500)
+        .priority('high')
+        .attempts(5)
+        .backoff(true)
+        .save(function (err) {
             if (!err) console.log(`New Job; ${colors.green(job.id)} for exchanges: [${colors.green(exchangeNames)}], pair: ${colors.green(key)}`);
         });
     });
@@ -107,15 +135,21 @@ const retrieveTickers = async () => {
     queue.process('fetchMarketPairTicker', function (job, done) {
         retrieveTicker(job.data, done);
     });
+
+    queue.on('error', function (err) {
+        console.log('Error procesing job... ', err);
+    });
 };
 
 // We use the names to fetch from the exchanges
 // and the ids to store locally
 const retrieveTicker = async (jobData, done) => {
+
     try {
-        console.time("Exchange Pair Tickers");
+        console.time("tickerdata");
 
         // Order is preserved, we can use tickerData index to access exchangeData
+        // TODO: Retries if an exchange fails
         const tickerData = await Promise.all(jobData.exchangeData.map(async (exchangeData) => {
             return await exchanges[exchangeData.exchangeName].fetchTicker(exchangeData.name);
         }));
@@ -129,13 +163,27 @@ const retrieveTicker = async (jobData, done) => {
         const lowestExchange = jobData.exchangeData[lowestIndex];
 
         console.log(`${colors.bgWhite(colors.cyan(highestExchange.name))} - Lowest: ${colors.green(lowestExchange.exchangeName + ' ' + lowest.last)} | Highest: ${colors.red(highestExchange.exchangeName + ' ' + highest.last)}`);
-        console.timeEnd("Exchange Pair Tickers");
+        console.timeEnd("tickerdata");
 
         // processPrice(exchangeId, exchangeName, pairId, pairName, ticker);
         storeTickers(jobData.exchangeData, tickerData);
         done();
     } catch (e) {
-        console.error(e.message);
+        // swallow connectivity exceptions only
+        if ((e instanceof ccxt.DDoSProtection) || e.message.includes('ECONNRESET')) {
+            console.log(colors.yellow(exchange.id + ' [DDoS Protection]'));
+        } else if (e instanceof ccxt.RequestTimeout) {
+            console.log(colors.yellow(exchange.id + ' [Request Timeout] ' + e.message));
+        } else if (e instanceof ccxt.AuthenticationError) {
+            console.log(colors.yellow(exchange.id + ' [Authentication Error] ' + e.message));
+        } else if (e instanceof ccxt.ExchangeNotAvailable) {
+            console.log(colors.yellow(exchange.id + ' [Exchange Not Available] ' + e.message));
+        } else if (e instanceof ccxt.ExchangeError) {
+            console.log(colors.yellow(exchange.id + ' [Exchange Error] ' + e.message));
+        } else {
+            throw e; // rethrow all other exceptions
+        }
+
         done(e);
     }
 };
@@ -206,7 +254,7 @@ const cleanUpOldJobs = () => {
     kue.Job.rangeByState('complete', 0, n, 'asc', function (err, jobs) {
         jobs.forEach(function (job) {
             job.remove(function () {
-                console.log('removed ', job.id);
+                console.log('Removed job: ', job.id);
             });
         });
     });

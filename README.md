@@ -11,7 +11,7 @@
 - Run Migrations: `yarn migrate`
 
 # Bot Usage:
-- Sync Exchanges and Market Pairs. Run: `bot.js -m`
+- Sync Exchanges and Market Pairs. Run: `worker/bot.js -m`
 - Initialize worker with PM2: `pm2 start worker/worker.js`
 - Manual usage:
     - Retrieve Market Pairs: `worker/bot.js -m`
