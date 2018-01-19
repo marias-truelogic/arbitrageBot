@@ -16,6 +16,12 @@ module.exports = (sequelize, DataTypes) => {
     ask: {
       type: DataTypes.DOUBLE
     },
+    last: {
+      type: DataTypes.DOUBLE
+    },
+    change: {
+      type: DataTypes.DOUBLE
+    },
   });
 
   Ticker.associate = (models) => {

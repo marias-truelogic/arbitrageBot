@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+require('dotenv').config();
+
 const ccxt = require('ccxt');
 const _ = require('lodash');
 const kue = require('kue');
@@ -8,8 +10,9 @@ const program = require('commander');
 
 program
     .version('0.0.1')
-    .option('-m, --only-retrieve-markers', 'Only retrieve Markets')
+    .option('-m, --only-retrieve-markets', 'Only retrieve Markets')
     .option('-t, --only-retrieve-tickers', 'Only retrieve Tickers')
+    .option('-c, --clean-up-old-jobs', 'Clean up old jobs')
     .parse(process.argv);
 
 const queue = kue.createQueue();
@@ -19,15 +22,28 @@ const { Exchange, ExchangePair, Ticker } = require('../server/models/index');
 
 // ---
 const ENABLED_EXCHANGES = [
-    'bittrex',
-    'binance'
-]
+    'bittrex', // US
+    'binance', // Japan
+    'kucoin', // Hong Kong
+    'yobit' //Russia (TIMING OUT. FIX THIS)
+];
 
 // Init enabled exchanges
 const exchanges = {};
 ENABLED_EXCHANGES.forEach(id => {
     exchanges[id] = new (ccxt)[id]({ enableRateLimit: true })
 });
+
+// TODO: Make this prettier ^
+if (process.env.BITTREX_WITHDRAW_KEY && process.env.BITTREX_WITHDRAW_SECRET && exchanges.bittrex) {
+    exchanges.bittrex.apiKey = process.env.BITTREX_WITHDRAW_KEY; 
+    exchanges.bittrex.secret = process.env.BITTREX_WITHDRAW_SECRET; 
+}
+
+if (process.env.BINANCE_WITHDRAW_KEY && process.env.BINANCE_WITHDRAW_SECRET && exchanges.binance) {
+    exchanges.binance.apiKey = process.env.BINANCE_WITHDRAW_KEY;
+    exchanges.binance.secret = process.env.BINANCE_WITHDRAW_SECRET;
+}
 
 // Retrieve exchange-market pairs
 // Do this every 24 hours or more?
@@ -61,119 +77,147 @@ const retrieveExchangeMarkets = () => {
 // Do this every second?
 // TODO: Simplify, too complex
 const retrieveTickers = async () => {
-
-
-    // Get exchange from db
-    // Get all pairs
-    // Iterate all pairs, create new job for each pair
-    
-    ENABLED_EXCHANGES.forEach(async (exchangeName) => {
-        const exchange = await Exchange.findOne({
-            where: { name: exchangeName },
-            include: [{
-                model: ExchangePair,
-                as: 'exchangePairs',
-            }],
-        });
-
-        if(exchange.exchangePairs) {
-            exchange.exchangePairs.forEach((exchangePair) => {
-                const job = queue.create('fetchTicker', {
-                    exchangeId: exchange.id,
-                    exchangeName: exchangeName,
-                    pairId: exchangePair.id,
-                    pairName: exchangePair.name
-                }).ttl(1500).removeOnComplete(true).save(function (err) {
-                    if (!err) console.log(`New Job; ${job.id} for exchange: ${exchangeName}, pair: ${exchangePair.name}`.green);
-                });
-            });
+    const exchangePairs = await ExchangePair.findAll({include: [Exchange]});
+    const processedExchangePairs = exchangePairs.map((exchangePair) => {
+        return {
+            name: exchangePair.name,
+            pairId: exchangePair.id,
+            exchangeId: exchangePair.Exchange.id,
+            exchangeName: exchangePair.Exchange.name,
         }
-
     });
 
-    queue.process('fetchTicker', 20, function (job, done) {
-        console.log(`Retrieving ticker for exchange: ${job.data.exchangeName}, pair: ${job.data.pairName}`.yellow);
-        retrieveTicker(job.data.exchangeId, job.data.exchangeName, job.data.pairId, job.data.pairName, done);
+    const groupedExchangePairs = _.groupBy(processedExchangePairs, 'name');
+    const groupedExchangePairsWithAtLeastTwoExchanges = _.pickBy(groupedExchangePairs, (value, key) => {
+        return value.length > 1;
     });
 
-    // Gracefully shutdown
-    process.once('SIGTERM', function (sig) {
-        queue.shutdown(5000, function (err) {
-            console.log('Kue shutdown: ', err || '');
-            process.exit(0);
+    _.forOwn(groupedExchangePairsWithAtLeastTwoExchanges, (value, key) => {
+        const exchangeNames = _.map(value, 'exchangeName');
+        const exchangeIds = _.map(value, 'exchangeId');
+
+        const job = queue.create('fetchMarketPairTicker', {
+            exchangeData: value,
+            pairName: key
+        }).removeOnComplete(true).save(function (err) {
+            if (!err) console.log(`New Job; ${colors.green(job.id)} for exchanges: [${colors.green(exchangeNames)}], pair: ${colors.green(key)}`);
         });
+    });
+
+    queue.process('fetchMarketPairTicker', function (job, done) {
+        retrieveTicker(job.data, done);
     });
 };
 
 // We use the names to fetch from the exchanges
 // and the ids to store locally
-const retrieveTicker = async (exchangeId, exchangeName, pairId, pairName, done) => {
+const retrieveTicker = async (jobData, done) => {
     try {
-        const ticker = await exchanges[exchangeName].fetchTicker(pairName);
-        storeTicker(exchangeId, exchangeName, pairId, pairName, ticker);
+        console.time("Exchange Pair Tickers");
+
+        // Order is preserved, we can use tickerData index to access exchangeData
+        const tickerData = await Promise.all(jobData.exchangeData.map(async (exchangeData) => {
+            return await exchanges[exchangeData.exchangeName].fetchTicker(exchangeData.name);
+        }));
+
+        const highest = _.maxBy(tickerData, t => t.last);
+        const highestIndex = tickerData.indexOf(highest);
+        const highestExchange = jobData.exchangeData[highestIndex];
+
+        const lowest = _.minBy(tickerData, t => t.last);
+        const lowestIndex = tickerData.indexOf(lowest);
+        const lowestExchange = jobData.exchangeData[lowestIndex];
+
+        console.log(`${colors.bgWhite(colors.cyan(highestExchange.name))} - Lowest: ${colors.green(lowestExchange.exchangeName + ' ' + lowest.last)} | Highest: ${colors.red(highestExchange.exchangeName + ' ' + highest.last)}`);
+        console.timeEnd("Exchange Pair Tickers");
+
+        // processPrice(exchangeId, exchangeName, pairId, pairName, ticker);
+        storeTickers(jobData.exchangeData, tickerData);
         done();
     } catch (e) {
+        console.error(e.message);
         done(e);
     }
 };
 
-// Example output:
-    // { symbol: 'BTC/USDT',
-    //     timestamp: 1516128253653,
-    //     datetime: '2018-01-16T18:44:13.653Z',
-    //     high: 13936.99,
-    //     low: 10700.00000001,
-    //     bid: 10951.095,
-    //     ask: 10993,
-    //     vwap: undefined,
-    //     open: undefined,
-    //     close: undefined,
-    //     first: undefined,
-    //     last: 10950.00000001,
-    //     change: undefined,
-    //     percentage: undefined,
-    //     average: undefined,
-    //     baseVolume: 13034.17570477,
-    //     quoteVolume: 156189210.2309952,
-    //     info: {
-    //         MarketName: 'USDT-BTC',
-    //         High: 13936.99,
-    //         Low: 10700.00000001,
-    //         Volume: 13034.17570477,
-    //         Last: 10950.00000001,
-    //         BaseVolume: 156189210.2309952,
-    //         TimeStamp: '2018-01-16T18:44:13.653',
-    //         Bid: 10951.095,
-    //         Ask: 10993,
-    //         OpenBuyOrders: 3622,
-    //         OpenSellOrders: 6584,
-    //         PrevDay: 13873.17000002,
-    //         Created: '2015-12-11T06:31:40.633'
-    //     }
-    // }
-
-
-const storeTicker = async(exchangeId, exchangeName, pairId, pairName, data) => {
+const storeTickers = (exchangeData, tickerData) => {
     try {
-        const ticker = await Ticker.create({
-            datetime: data.datetime,
-            high: data.high,
-            low: data.low,
-            bid: data.bid,
-            ask: data.ask,
-            exchangePairId: pairId,
-        });
-        
-        console.log(`Created Ticker: ${exchangeName} - ${pairName}`.green);
+        tickerData.map(async (tickerItem, index) => {
+            if (exchangeData[index]) {
+                const exchange = exchangeData[index];
+                const newTicker = await Ticker.create({
+                    datetime: tickerItem.datetime,
+                    high: tickerItem.high,
+                    low: tickerItem.low,
+                    bid: tickerItem.bid,
+                    ask: tickerItem.ask,
+                    last: tickerItem.last,
+                    change: tickerItem.change,
+                    exchangePairId: exchange.pairId,
+                });
+
+                console.log(`Created Ticker: ${exchange.exchangeName} - ${exchange.name}`.green);
+            }
+        });        
     } catch(e) {
-        console.log(colors.red(e.message));
+        console.error(colors.red(e.message));
     }
 };
 
-if (program.onlyRetrieveMarkers) {
+const processPrice = async (exchangeId, exchangeName, pairId, pairName, data) => {
+    /* TODO:
+        - When all of the pairs for all exchanges are done
+        - Determine which pair on which exchange is higher / lower
+
+        Getting addresses of the exchanges:
+        // fetchDepositAddress (code, params={})
+        // createDepositAddress (code, params={})
+        // Code is the currency code in the exchange you want an address for
+        // Maybe set these values manually for extra safety
+
+        Deposit: (https://github.com/ccxt/ccxt/wiki/Manual#deposit)
+
+        Withdraw: (https://github.com/ccxt/ccxt/wiki/Manual#withdraw)
+        exchange.withdraw (currency, amount, address, tag = undefined, params = {})
+
+
+        Placing Orders: (https://github.com/ccxt/ccxt/wiki/Manual#placing-orders)
+        Market orders: (https://github.com/ccxt/ccxt/wiki/Manual#market-orders)
+
+        Market price orders are also known as spot price orders, 
+        instant orders or simply market orders. A market order gets executed immediately. 
+        The matching engine of the exchange closes the order (fulfills it) with one or 
+        more transactions from the top of the order book stack.
+        --
+        exchange.createMarketBuyOrder (symbol, amount[, params])
+        exchange.createMarketSellOrder (symbol, amount[, params])
+
+        Limit price orders are also known as limit orders. Some exchanges accept limit orders only. 
+        Limit orders require a price (rate per unit) to be submitted with the order. 
+        The exchange will close limit orders if and only if market price reaches the desired level.
+        --
+        exchange.createLimitBuyOrder (symbol, amount, price[, params])
+        exchange.createLimitSellOrder (symbol, amount, price[, params])
+
+    */
+};
+
+const cleanUpOldJobs = () => {
+    kue.Job.rangeByState('complete', 0, n, 'asc', function (err, jobs) {
+        jobs.forEach(function (job) {
+            job.remove(function () {
+                console.log('removed ', job.id);
+            });
+        });
+    });
+};
+
+if (program.onlyRetrieveMarkets) { // -m
     retrieveExchangeMarkets();
-} else if(program.onlyRetrieveTickers) {
+} else if(program.onlyRetrieveTickers) { // -t
     retrieveTickers();
+} else if(program.cleanUpOldJobs) { // -c
+    cleanUpOldJobs();
 } else {
     retrieveExchangeMarkets();
     retrieveTickers();
@@ -181,5 +225,6 @@ if (program.onlyRetrieveMarkers) {
 
 module.exports = {
     retrieveExchangeMarkets,
+    cleanUpOldJobs,
     retrieveTickers
 }
