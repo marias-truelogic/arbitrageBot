@@ -69,35 +69,63 @@ if (process.env.BINANCE_WITHDRAW_KEY && process.env.BINANCE_WITHDRAW_SECRET && e
 // Retrieve exchange-market pairs
 // Do this every 24 hours or more?
 const retrieveExchangeMarkets = () => {
-    ENABLED_EXCHANGES.forEach(async (exchangeName) => {
-        const loadedMarkets = await exchanges[exchangeName].load_markets();
-        const filteredMarkets = _.pickBy(loadedMarkets, (value, key) => {
-            return !!_.find(ENABLED_PAIRS, pair => pair === key);
-        });
-
-        Exchange.findOrCreate({
-            where: {
-                name: exchangeName
-            }
-        }).then((exchangeResult) => {
+    Promise.all(ENABLED_EXCHANGES.map(async (exchangeName) => {
+        try {
+            const loadedMarkets = await exchanges[exchangeName].load_markets();
+    
+            const filteredMarkets = _.pickBy(loadedMarkets, (value, key) => {
+                return !!_.find(ENABLED_PAIRS, pair => pair === key);
+            });
+    
+            const exchangeResult = await Exchange.findOrCreate({
+                where: {
+                    name: exchangeName
+                }
+            });
+    
             const [exchangeInstance, exchangeWasCreated] = exchangeResult;
-            _.forOwn(filteredMarkets, (value, key) => {
-                ExchangePair.findOrCreate({
+    
+            return Promise.all(Object.keys(loadedMarkets).map( async (key) => {
+                return await ExchangePair.findOrCreate({
                     where: {
                         name: key,
                         exchangeId: exchangeInstance.id
                     }
-                }).then((exchangePairResult) => {
-                    const [exchangePairInstance, exchangePairWasCreated] = exchangePairResult;
-                    console.log(`Created pair: ${exchangeName} - ${key}`.green);
+                })
+            })).then((exchangePairs) => {
+                exchangePairs.forEach((pair) => {
+                    console.log(`Created pair: ${exchangeName} - ${pair[0].name}`.green);
                 });
             });
-        });
+        } catch (e) {
+            // swallow connectivity exceptions only
+            // TODO:
+            // retrieve these later
+            // log them
+            if ((e instanceof ccxt.DDoSProtection) || e.message.includes('ECONNRESET')) {
+                console.log(colors.yellow(exchangeName + ' [DDoS Protection]'));
+            } else if (e instanceof ccxt.RequestTimeout) {
+                console.log(colors.yellow(exchangeName + ' [Request Timeout] ' + e.message));
+            } else if (e instanceof ccxt.AuthenticationError) {
+                console.log(colors.yellow(exchangeName + ' [Authentication Error] ' + e.message));
+            } else if (e instanceof ccxt.ExchangeNotAvailable) {
+                console.log(colors.yellow(exchangeName + ' [Exchange Not Available] ' + e.message));
+            } else if (e instanceof ccxt.ExchangeError) {
+                console.log(colors.yellow(exchangeName + ' [Exchange Error] ' + e.message));
+            } else {
+                throw e; // rethrow all other exceptions
+            }
+        }
+    })).catch((error) => {
+        // TODO: Log this error
+        console.log(error);
+    }).then(() => {
+        console.log('--------------finished-------------'.cyan);
+        process.exit();
     });
 };
 
 // Retrieve enabled market tickers
-// Do this every second?
 // TODO: Simplify, too complex
 const retrieveTickers = async () => {
     const exchangePairs = await ExchangePair.findAll({include: [Exchange]});
