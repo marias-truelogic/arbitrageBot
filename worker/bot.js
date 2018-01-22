@@ -16,7 +16,7 @@ program
     .parse(process.argv);
 
 const queue = kue.createQueue();
-const { Exchange, ExchangePair, Ticker } = require('../server/models/index');
+const { Exchange, ExchangePair, Ticker, Coin } = require('../server/models/index');
 
 // TODO: Error handling
 
@@ -76,6 +76,10 @@ const retrieveExchangeMarkets = () => {
             const filteredMarkets = _.pickBy(loadedMarkets, (value, key) => {
                 return !!_.find(ENABLED_PAIRS, pair => pair === key);
             });
+
+            const filteredMarketCoins = _.uniq(_.flatten(Object.keys(filteredMarkets).map((key) => {
+                return key.split('/');
+            })));
     
             const exchangeResult = await Exchange.findOrCreate({
                 where: {
@@ -84,12 +88,26 @@ const retrieveExchangeMarkets = () => {
             });
     
             const [exchangeInstance, exchangeWasCreated] = exchangeResult;
+
+            await Promise.all(filteredMarketCoins.map( async (coin) => {
+                return Coin.findOrCreate({
+                    where: {
+                        name: coin,
+                        exchangeId: exchangeInstance.id
+                    }
+                });
+            }));
     
-            return Promise.all(Object.keys(loadedMarkets).map( async (key) => {
+            return Promise.all(Object.keys(filteredMarkets).map( async (key) => {
                 return await ExchangePair.findOrCreate({
                     where: {
                         name: key,
                         exchangeId: exchangeInstance.id
+                    },
+                    defaults: {
+                        txFee: _.get(filteredMarkets[key], 'info.feeRate', 0),
+                        minTradeSize: _.get(filteredMarkets[key], 'info.MinTradeSize', 0),
+                        change: _.get(filteredMarkets[key], 'info.change', 0),
                     }
                 })
             })).then((exchangePairs) => {
@@ -100,7 +118,7 @@ const retrieveExchangeMarkets = () => {
         } catch (e) {
             // swallow connectivity exceptions only
             // TODO:
-            // retrieve these later
+            // retrieve these later (use proxy array, make this recursive with max tries)
             // log them
             if ((e instanceof ccxt.DDoSProtection) || e.message.includes('ECONNRESET')) {
                 console.log(colors.yellow(exchangeName + ' [DDoS Protection]'));
@@ -193,7 +211,7 @@ const retrieveTicker = async (jobData, done) => {
         console.log(`${colors.bgWhite(colors.cyan(highestExchange.name))} - Lowest: ${colors.green(lowestExchange.exchangeName + ' ' + lowest.last)} | Highest: ${colors.red(highestExchange.exchangeName + ' ' + highest.last)}`);
         console.timeEnd("tickerdata");
 
-        // processPrice(exchangeId, exchangeName, pairId, pairName, ticker);
+        processPrice(exchangeId, exchangeName, pairId, pairName, ticker);
         storeTickers(jobData.exchangeData, tickerData);
         done();
     } catch (e) {

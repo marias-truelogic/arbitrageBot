@@ -4,11 +4,23 @@ module.exports = (sequelize, DataTypes) => {
     name: {
       type: DataTypes.STRING,
       allowNull: false,
-    }
+    },
+    minTradeSize: {
+      type: DataTypes.DOUBLE,
+      allowNull: false,
+    },
+    change: {
+      type: DataTypes.DOUBLE,
+      allowNull: false,
+    },
+    txFee: {
+      type: DataTypes.DOUBLE,
+      allowNull: false,
+    },
   });
 
   // An Exchange Pair can only have one Exchange
-  // An Exchange Pair has many Ticks
+  // An Exchange Pair has many Tickers
   ExchangePair.associate = (models) => {
     ExchangePair.belongsTo(models.Exchange, {
       foreignKey: 'exchangeId',

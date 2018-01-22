@@ -1,7 +1,7 @@
 import _ from 'lodash';
 import React, { Component } from 'react';
 
-import PairChart from './components/PairChart';
+import BtcTotals from './components/BtcTotals';
 
 class App extends Component {
 
@@ -12,7 +12,6 @@ class App extends Component {
       pairs: false,
     }
 
-    this.buildPairCharts = this.buildPairCharts.bind(this);
   }
 
   componentDidMount() {
@@ -26,23 +25,30 @@ class App extends Component {
       });
   }
 
-  buildPairCharts() {
-    const { pairs } = this.state;
-
-    return Object.keys(pairs).map(key => (
-      <div className='row'>
-        <div className="col">
-          <PairChart pair={pairs[key]} />
-        </div>
-      </div>
-    ));    
-  }
-
   render() {
     const { pairs } = this.state;
     return (
       <div className="container-fluid">
-        {pairs ? this.buildPairCharts() : 'Loading'}
+        <div className='row'>
+          <div className="col">
+            <BtcTotals />
+          </div>
+        </div>
+        <div className='row'>
+          <div className="col">
+            <h3>Wallets</h3>
+          </div>
+        </div>
+        <div className='row'>
+          <div className="col">
+            <h3>Logs</h3>
+          </div>
+        </div>
+        <div className='row'>
+          <div className="col">
+            <h3>Bot preferences</h3>
+          </div>
+        </div>
       </div>
     );
   }

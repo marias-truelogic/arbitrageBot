@@ -13,6 +13,18 @@ module.exports = {
         type: Sequelize.STRING,
         allowNull: false,
       },
+      txFee: {
+        type: Sequelize.DOUBLE,
+        allowNull: false,
+      },
+      minTradeSize: {
+        type: Sequelize.DOUBLE,
+        allowNull: false,
+      },
+      change: {
+        type: Sequelize.DOUBLE,
+        allowNull: false,
+      },
       createdAt: {
         allowNull: false,
         type: Sequelize.DATE,
